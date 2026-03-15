@@ -4,7 +4,8 @@ import torch.nn as nn
 
 class TransformerLanguageModel(nn.Module):
 
-    def __init__(self, vocab_size, embed_size=256, num_heads=8, num_layers=4, max_len=256):
+    def __init__(self, vocab_size, embed_size=256, num_heads=8, num_layers=4, max_len=200):
+
         super().__init__()
 
         self.token_embedding = nn.Embedding(vocab_size, embed_size)
@@ -13,8 +14,6 @@ class TransformerLanguageModel(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_size,
             nhead=num_heads,
-            dim_feedforward=512,
-            dropout=0.1,
             batch_first=True
         )
 

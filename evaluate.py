@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
+
 from models.transformer import TransformerLanguageModel
-from utils import char_tokenizer, word_tokenizer, create_sequences
-from tqdm import tqdm
+from utils import clean_text, char_tokenizer, word_tokenizer, create_sequences
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -10,14 +10,17 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # -------------------------------------------------
 # Configuration
 # -------------------------------------------------
-TOKEN_LEVEL = "char"   # choose: "char" or "word"
-SEQ_LEN = 100
+TOKEN_LEVEL = "word"   # choose: "char" or "word"
 TEXT_PATH = "data/sherlock.txt"
+SEQ_LEN = 20
+
 
 # -------------------------------------------------
-# Load text
+# Load and clean text
 # -------------------------------------------------
 text = open(TEXT_PATH).read()
+text = clean_text(text)
+
 
 # -------------------------------------------------
 # Tokenization
@@ -39,11 +42,16 @@ else:
 # -------------------------------------------------
 X, y = create_sequences(encoded, SEQ_LEN)
 
+
 # -------------------------------------------------
 # Load model
 # -------------------------------------------------
 model = TransformerLanguageModel(len(stoi)).to(device)
-model.load_state_dict(torch.load(model_path, map_location=device))
+
+model.load_state_dict(
+    torch.load(model_path, map_location=device)
+)
+
 model.eval()
 
 loss_fn = nn.CrossEntropyLoss()
@@ -52,12 +60,13 @@ correct = 0
 total = 0
 total_loss = 0
 
+
 # -------------------------------------------------
 # Evaluation
 # -------------------------------------------------
 with torch.no_grad():
 
-    for i in tqdm(range(len(X)), desc="Evaluating"):
+    for i in range(len(X)):
 
         xb = X[i].unsqueeze(0).to(device)
         yb = y[i].unsqueeze(0).to(device)
@@ -76,9 +85,14 @@ with torch.no_grad():
         correct += (preds == yb).sum().item()
         total += yb.numel()
 
+
+# -------------------------------------------------
+# Metrics
+# -------------------------------------------------
 accuracy = correct / total
+
 perplexity = torch.exp(torch.tensor(total_loss / len(X)))
 
-print(f"Tokenization Level: {TOKEN_LEVEL}")
+print(f"\nTokenization Level: {TOKEN_LEVEL}")
 print("Accuracy:", accuracy)
 print("Perplexity:", perplexity.item())

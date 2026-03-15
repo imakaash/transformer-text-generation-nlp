@@ -1,21 +1,28 @@
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from models.transformer import TransformerLanguageModel
-from utils import word_tokenizer, create_sequences
+from utils import clean_text, word_tokenizer, create_sequences
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 text = open("data/sherlock.txt").read()
 
+text = clean_text(text)
+
 encoded, stoi, itos = word_tokenizer(text)
 
 seq_len = 20
 
 X, y = create_sequences(encoded, seq_len)
+
+perm = torch.randperm(len(X))
+
+X = X[perm]
+y = y[perm]
 
 model = TransformerLanguageModel(len(stoi)).to(device)
 
@@ -28,14 +35,13 @@ batch_size = 64
 
 loss_history = []
 
-
 for epoch in range(epochs):
 
     total_loss = 0
 
     print(f"\nEpoch {epoch+1}/{epochs}")
 
-    for i in tqdm(range(0, len(X), batch_size), desc="Training Batches"):
+    for i in tqdm(range(0, len(X), batch_size)):
 
         xb = X[i:i+batch_size].to(device)
         yb = y[i:i+batch_size].to(device)
@@ -59,11 +65,8 @@ for epoch in range(epochs):
 
     loss_history.append(avg_loss)
 
-
 torch.save(model.state_dict(), "word_transformer.pt")
 
-
-# Plot training loss
 plt.plot(loss_history)
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
