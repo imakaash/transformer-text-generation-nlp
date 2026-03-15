@@ -13,6 +13,20 @@ def char_tokenizer(text):
     return encoded, stoi, itos
 
 
+def word_tokenizer(text):
+
+    words = text.split()
+
+    vocab = sorted(set(words))
+
+    stoi = {w:i for i,w in enumerate(vocab)}
+    itos = {i:w for w,i in stoi.items()}
+
+    encoded = [stoi[w] for w in words]
+
+    return encoded, stoi, itos
+
+
 def create_sequences(data, seq_len):
 
     xs = []
