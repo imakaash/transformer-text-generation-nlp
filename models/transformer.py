@@ -4,7 +4,7 @@ import torch.nn as nn
 
 class TransformerLanguageModel(nn.Module):
 
-    def __init__(self, vocab_size, embed_size=256, num_heads=8, num_layers=4, max_len=200):
+    def __init__(self, vocab_size, embed_size=256, num_heads=8, num_layers=4, max_len=500):
 
         super().__init__()
 
@@ -14,6 +14,8 @@ class TransformerLanguageModel(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_size,
             nhead=num_heads,
+            dim_feedforward=512,
+            dropout=0.1,
             batch_first=True
         )
 
@@ -22,17 +24,32 @@ class TransformerLanguageModel(nn.Module):
             num_layers=num_layers
         )
 
-        self.fc = nn.Linear(embed_size, vocab_size)
+        self.fc = nn.Linear(embed_size, vocab_size, bias=False)
+
+        # weight tying
+        self.fc.weight = self.token_embedding.weight
+
+
+    def generate_causal_mask(self, size):
+
+        mask = torch.triu(torch.ones(size, size), diagonal=1)
+
+        mask = mask.masked_fill(mask == 1, float('-inf'))
+
+        return mask
+
 
     def forward(self, x):
 
-        seq_len = x.size(1)
+        batch_size, seq_len = x.shape
 
-        positions = torch.arange(0, seq_len).unsqueeze(0).to(x.device)
+        positions = torch.arange(0, seq_len, device=x.device).unsqueeze(0)
 
         x = self.token_embedding(x) + self.position_embedding(positions)
 
-        x = self.transformer(x)
+        mask = self.generate_causal_mask(seq_len).to(x.device)
+
+        x = self.transformer(x, mask=mask)
 
         logits = self.fc(x)
 

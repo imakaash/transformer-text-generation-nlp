@@ -1,6 +1,7 @@
 torch
 transformers
 datasets
+accelerate>=1.1.0
 tqdm
 numpy
 sentencepiece
