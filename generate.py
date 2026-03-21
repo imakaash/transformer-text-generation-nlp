@@ -1,82 +1,71 @@
-import re
-
 import torch
+
 from models.transformer import TransformerLanguageModel
-from utils import char_tokenizer, word_tokenizer, split_word_tokens
+from utils import clean_text, decode_word_tokens, split_word_tokens, word_tokenizer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# -------------------------------------------------
-# Configuration
-# -------------------------------------------------
-TOKEN_LEVEL = "word"   # choose: "char" or "word"
-TEXT_PATH = "data/sherlock_cleaned.txt"
-MODEL_DIR = "."
-PROMPT = "the drowsiness of the drug"
-GENERATE_LENGTH = 30
+TEXT_PATH = "data/sherlock.txt"
+PROMPTS = [
+    "i say, watson,",
+    "i had seen little of holmes lately. my",
+    "<para> one night--it was on the twentieth",
+    "i could not help laughing at the ease with which",
+    "indeed, i should have thought a little more.",
+    "i could not help laughing at the ease with which",
+    "they are coiners on a large scale, and"
+]
+GENERATE_LENGTH = 5
+MIN_CONTEXT_LEN = 5
+MAX_CONTEXT_LEN = 10
+TARGET_LEN = 5
+MODEL_PATH = "word_transformer.pt"
 
+text = clean_text(open(TEXT_PATH).read())
+_, stoi, itos = word_tokenizer(text)
 
-# -------------------------------------------------
-# Load text
-# -------------------------------------------------
-text = open(TEXT_PATH).read()
-
-
-# -------------------------------------------------
-# Tokenization
-# -------------------------------------------------
-if TOKEN_LEVEL == "char":
-    encoded, stoi, itos = char_tokenizer(text)
-    model_path = f"{MODEL_DIR}/char_transformer.pt"
-    CONTEXT_LEN = 120
-    TARGET_LEN = 20
-
-elif TOKEN_LEVEL == "word":
-    encoded, stoi, itos = word_tokenizer(text)
-    model_path = f"{MODEL_DIR}/word_transformer.pt"
-    CONTEXT_LEN = 60
-    TARGET_LEN = 5
-
-else:
-    raise ValueError("TOKEN_LEVEL must be 'char' or 'word'")
-
-
-# -------------------------------------------------
-# Load model
-# -------------------------------------------------
 model = TransformerLanguageModel(
     len(stoi),
-    max_len=CONTEXT_LEN + TARGET_LEN - 1
+    max_len=MAX_CONTEXT_LEN + TARGET_LEN - 1,
+    pad_token_id=stoi["<pad>"]
 ).to(device)
 
 model.load_state_dict(
-    torch.load(model_path, map_location=device)
+    torch.load(MODEL_PATH, map_location=device)
 )
 
 model.eval()
 
 
-# -------------------------------------------------
-# Text generation function
-# -------------------------------------------------
-def generate_text(prompt, length=30):
+def decode_tokens(token_ids, keep_special_tokens=False):
 
-    if TOKEN_LEVEL == "char":
-        tokens = [stoi[c] for c in prompt if c in stoi]
+    if keep_special_tokens:
+        return " ".join(itos[token_id] for token_id in token_ids)
 
-    else:
-        words = split_word_tokens(prompt.lower())
-        tokens = [stoi[w] for w in words if w in stoi]
+    return decode_word_tokens(token_ids, itos)
+
+
+def generate_text(prompt, length=5, show_steps=True):
+
+    words = [word for word in split_word_tokens(prompt.lower()) if word != "<para>"]
+    tokens = [stoi.get(word, stoi["<unk>"]) for word in words]
 
     if not tokens:
         raise ValueError("Prompt does not contain any known tokens.")
 
+    if len(tokens) < MIN_CONTEXT_LEN:
+        raise ValueError(
+            f"Prompt should contain at least {MIN_CONTEXT_LEN} words for this model."
+        )
+
     generated = list(tokens)
+    step_outputs = []
 
-    for _ in range(length):
+    for step_idx in range(length):
 
-        context_tokens = generated[-CONTEXT_LEN:]
-        context = torch.tensor([context_tokens]).to(device)
+        context_tokens = generated[-MAX_CONTEXT_LEN:]
+        padded_context = [stoi["<pad>"]] * (MAX_CONTEXT_LEN - len(context_tokens)) + context_tokens
+        context = torch.tensor([padded_context]).to(device)
 
         logits = model(context)
 
@@ -84,24 +73,33 @@ def generate_text(prompt, length=30):
 
         next_token = torch.multinomial(probs, 1).item()
 
+        step_outputs.append(
+            {
+                "step": step_idx + 1,
+                "model_input": padded_context,
+                "predicted_token": next_token,
+            }
+        )
         generated.append(next_token)
 
-    generated_tokens = [itos[i] for i in generated]
+    if show_steps:
+        for step in step_outputs:
+            print(f"Step {step['step']}")
+            print("Input to model:", decode_tokens(step["model_input"], keep_special_tokens=True))
+            print("Predicted output:", itos[step["predicted_token"]])
+            print()
 
-    if TOKEN_LEVEL == "char":
-        return "".join(generated_tokens)
-
-    output = " ".join(generated_tokens)
-    output = output.replace("<para>", "\n\n")
-
-    return re.sub(r"\s+([.,!?])", r"\1", output)
+    return decode_word_tokens(generated, itos)
 
 
-# -------------------------------------------------
-# Run generation
-# -------------------------------------------------
-output = generate_text(PROMPT, GENERATE_LENGTH)
+print("\nTokenization Level: word")
 
-print(f"\nTokenization Level: {TOKEN_LEVEL}")
-print("\nGenerated Text:\n")
-print(output)
+for example_idx, prompt in enumerate(PROMPTS, start=1):
+    print(f"\nExample {example_idx}")
+    print("Prompt:", prompt)
+    print()
+
+    output = generate_text(prompt, GENERATE_LENGTH, show_steps=True)
+
+    print("Final Output:")
+    print(output)

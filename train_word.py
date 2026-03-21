@@ -4,16 +4,21 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from models.transformer import TransformerLanguageModel
-from utils import clean_text, word_tokenizer, create_future_prediction_sequences
+from utils import clean_text, create_sentence_prediction_sequences, word_tokenizer
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+torch.manual_seed(42)
 
-CONTEXT_LEN = 60
+MIN_CONTEXT_LEN = 5
+MAX_CONTEXT_LEN = 10
 TARGET_LEN = 5
-STRIDE = 2
-EPOCHS = 10
+STRIDE = 1
+EPOCHS = 25
 BATCH_SIZE = 64
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0.01
+MAX_GRAD_NORM = 1.0
 
 text = open("data/sherlock.txt").read()
 
@@ -22,11 +27,13 @@ text = clean_text(text)
 with open("data/sherlock_cleaned.txt", "w") as f:
     f.write(text)
 
-encoded, stoi, itos = word_tokenizer(text)
+_, stoi, _ = word_tokenizer(text)
 
-X, y = create_future_prediction_sequences(
-    encoded,
-    CONTEXT_LEN,
+X, y = create_sentence_prediction_sequences(
+    text,
+    stoi,
+    MIN_CONTEXT_LEN,
+    MAX_CONTEXT_LEN,
     TARGET_LEN,
     stride=STRIDE
 )
@@ -35,6 +42,7 @@ if len(X) == 0:
     raise ValueError("Not enough tokens to build word prediction pairs.")
 
 print("Total context-target pairs:", len(X))
+print("Context length range:", f"{MIN_CONTEXT_LEN}-{MAX_CONTEXT_LEN} words")
 
 perm = torch.randperm(len(X))
 X = X[perm]
@@ -42,18 +50,29 @@ y = y[perm]
 
 model = TransformerLanguageModel(
     len(stoi),
-    max_len=CONTEXT_LEN + TARGET_LEN - 1
+    max_len=MAX_CONTEXT_LEN + TARGET_LEN - 1,
+    pad_token_id=stoi["<pad>"]
 ).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY
+)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=EPOCHS
+)
 
-loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+loss_fn = nn.CrossEntropyLoss()
 
-loss_history = []
+train_loss_history = []
 
 for epoch in range(EPOCHS):
 
-    total_loss = 0
+    model.train()
+
+    total_loss = 0.0
     num_batches = 0
 
     print(f"\nEpoch {epoch+1}/{EPOCHS}")
@@ -65,7 +84,7 @@ for epoch in range(EPOCHS):
 
         teacher_input = torch.cat([xb, yb[:, :-1]], dim=1)
         logits = model(teacher_input)
-        target_logits = logits[:, CONTEXT_LEN - 1:, :]
+        target_logits = logits[:, MAX_CONTEXT_LEN - 1:, :]
 
         loss = loss_fn(
             target_logits.reshape(-1, target_logits.size(-1)),
@@ -74,22 +93,24 @@ for epoch in range(EPOCHS):
 
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         optimizer.step()
 
         total_loss += loss.item()
         num_batches += 1
 
-    avg_loss = total_loss / max(1, num_batches)
+    avg_train_loss = total_loss / max(1, num_batches)
+    scheduler.step()
 
-    print("Average Loss:", avg_loss)
+    print("Train Loss:", avg_train_loss)
 
-    loss_history.append(avg_loss)
+    train_loss_history.append(avg_train_loss)
+    torch.save(model.state_dict(), "word_transformer.pt")
 
-torch.save(model.state_dict(), "word_transformer.pt")
-
-plt.plot(loss_history)
+plt.plot(train_loss_history, label="train")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Word Transformer Training Loss")
+plt.legend()
 plt.savefig("training_loss_word.png")
 plt.show()

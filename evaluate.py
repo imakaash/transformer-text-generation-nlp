@@ -1,198 +1,147 @@
-import re
-
+from collections import Counter
+import random
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
 from models.transformer import TransformerLanguageModel
-from utils import (
-    char_tokenizer,
-    word_tokenizer,
-    create_future_prediction_sequences,
-)
-
+from utils import clean_text, split_word_tokens, word_tokenizer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # -------------------------------------------------
-# Configuration
+# Config
 # -------------------------------------------------
-TOKEN_LEVEL = "word"   # choose: "char" or "word"
-TEXT_PATH = "data/sherlock_cleaned.txt"
-BATCH_SIZE = 64
-EVAL_SPLIT = 0.1
-SHOW_EXAMPLES = 3
-MIN_CORRECT_TOKENS = 3
+TEXT_PATH = "data/sherlock.txt"
+MODEL_PATH = "word_transformer.pt"
 
+MIN_CONTEXT_LEN = 5
+MAX_CONTEXT_LEN = 10
+TARGET_LEN = 5
+NUM_SAMPLES = 20000  # number of evaluation examples
 
-# -------------------------------------------------
-# Load text
-# -------------------------------------------------
-text = open(TEXT_PATH).read()
-
+IGNORED_TOKENS = {"<pad>", "<para>"}
 
 # -------------------------------------------------
-# Tokenization
+# Load + Tokenize
 # -------------------------------------------------
-if TOKEN_LEVEL == "char":
-    encoded, stoi, itos = char_tokenizer(text)
-    model_path = "char_transformer.pt"
-    CONTEXT_LEN = 120
-    TARGET_LEN = 20
+text = clean_text(open(TEXT_PATH).read())
+tokens = split_word_tokens(text)
 
-elif TOKEN_LEVEL == "word":
-    encoded, stoi, itos = word_tokenizer(text)
-    model_path = "word_transformer.pt"
-    CONTEXT_LEN = 60
-    TARGET_LEN = 5
+_, stoi, itos = word_tokenizer(text)
 
-else:
-    raise ValueError("TOKEN_LEVEL must be 'char' or 'word'")
-
-
-def decode_tokens(token_ids):
-
-    tokens = [itos[idx] for idx in token_ids]
-
-    if TOKEN_LEVEL == "char":
-        return "".join(tokens)
-
-    text = " ".join(tokens).replace("<para>", "\n\n")
-
-    return re.sub(r"\s+([.,!?])", r"\1", text)
-
+# Convert full corpus to token ids
+token_ids = [stoi.get(tok, stoi["<unk>"]) for tok in tokens]
 
 # -------------------------------------------------
-# Create sequences
-# -------------------------------------------------
-X, y = create_future_prediction_sequences(
-    encoded,
-    CONTEXT_LEN,
-    TARGET_LEN
-)
-
-if len(X) == 0:
-    raise ValueError("Not enough tokens to build evaluation pairs.")
-
-num_eval = max(1, int(len(X) * EVAL_SPLIT))
-X = X[-num_eval:]
-y = y[-num_eval:]
-
-print("Evaluation pairs:", len(X))
-
-
-# -------------------------------------------------
-# Load model
+# Load Model
 # -------------------------------------------------
 model = TransformerLanguageModel(
     len(stoi),
-    max_len=CONTEXT_LEN + TARGET_LEN - 1
+    max_len=MAX_CONTEXT_LEN + TARGET_LEN - 1,
+    pad_token_id=stoi["<pad>"]
 ).to(device)
 
-model.load_state_dict(
-    torch.load(model_path, map_location=device)
-)
-
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 model.eval()
 
+# -------------------------------------------------
+# Helper Functions
+# -------------------------------------------------
+def decode(token_ids):
+    return " ".join(
+        itos[t] for t in token_ids if itos[t] not in IGNORED_TOKENS
+    )
 
-loss_fn = nn.CrossEntropyLoss()
 
+def generate_step_by_step(context_tokens):
+    """Same generation logic as working script"""
+    generated = list(context_tokens)
+
+    for _ in range(TARGET_LEN):
+        context = generated[-MAX_CONTEXT_LEN:]
+        padded = [stoi["<pad>"]] * (MAX_CONTEXT_LEN - len(context)) + context
+
+        x = torch.tensor([padded]).to(device)
+
+        with torch.no_grad():
+            logits = model(x)
+
+        probs = torch.softmax(logits[0, -1], dim=0)
+        next_token = torch.multinomial(probs, 1).item()
+
+        generated.append(next_token)
+
+    return generated[len(context_tokens):]  # only new tokens
+
+
+def unordered_match(pred, target):
+    """Bag-of-words matching"""
+    pred_counts = Counter(pred)
+    target_counts = Counter(target)
+
+    matches = pred_counts & target_counts
+    return sum(matches.values()), len(target)
+
+
+# -------------------------------------------------
+# Evaluation Loop
+# -------------------------------------------------
 correct = 0
-total_tokens = 0
-threshold_matches = 0
-exact_matches = 0
-total_loss = 0
+total = 0
+
 examples = []
 
+valid_starts = list(range(len(token_ids) - MAX_CONTEXT_LEN - TARGET_LEN))
+sample_indices = random.sample(valid_starts, min(NUM_SAMPLES, len(valid_starts)))
+
+for idx in tqdm(sample_indices, desc="Evaluating"):
+
+    context = token_ids[idx: idx + MAX_CONTEXT_LEN]
+    target = token_ids[idx + MAX_CONTEXT_LEN: idx + MAX_CONTEXT_LEN + TARGET_LEN]
+
+    # Skip bad contexts
+    if len(context) < MIN_CONTEXT_LEN:
+        continue
+
+    pred = generate_step_by_step(context)
+
+    # Filter ignored tokens
+    pred_filtered = [t for t in pred if itos[t] not in IGNORED_TOKENS]
+    target_filtered = [t for t in target if itos[t] not in IGNORED_TOKENS]
+
+    matched, count = unordered_match(pred_filtered, target_filtered)
+
+    correct += matched
+    total += count
+
+    if len(examples) < 10:
+        examples.append((
+            decode(context),
+            decode(target_filtered),
+            decode(pred_filtered),
+            matched,
+            count
+        ))
 
 # -------------------------------------------------
-# Evaluation
+# Results
 # -------------------------------------------------
-with torch.no_grad():
+accuracy = correct / total if total else 0.0
 
-    for i in tqdm(range(0, len(X), BATCH_SIZE), desc="Evaluating"):
-
-        xb = X[i:i+BATCH_SIZE].to(device)
-        yb = y[i:i+BATCH_SIZE].to(device)
-
-        teacher_input = torch.cat([xb, yb[:, :-1]], dim=1)
-        logits = model(teacher_input)
-        target_logits = logits[:, CONTEXT_LEN - 1:, :]
-
-        loss = loss_fn(
-            target_logits.reshape(-1, target_logits.size(-1)),
-            yb.reshape(-1)
-        )
-
-        batch_tokens = yb.numel()
-        total_loss += loss.item() * batch_tokens
-
-        rollout_context = xb.clone()
-        rollout_preds = []
-
-        for _ in range(TARGET_LEN):
-            context_window = rollout_context[:, -CONTEXT_LEN:]
-            rollout_logits = model(context_window)
-            next_token = torch.argmax(
-                rollout_logits[:, -1, :],
-                dim=-1,
-                keepdim=True
-            )
-            rollout_preds.append(next_token)
-            rollout_context = torch.cat([rollout_context, next_token], dim=1)
-
-        preds = torch.cat(rollout_preds, dim=1)
-        per_example_correct = (preds == yb).sum(dim=1)
-
-        correct += (preds == yb).sum().item()
-        total_tokens += batch_tokens
-        threshold_matches += (
-            per_example_correct >= min(MIN_CORRECT_TOKENS, TARGET_LEN)
-        ).sum().item()
-        exact_matches += (preds == yb).all(dim=1).sum().item()
-
-        if len(examples) < SHOW_EXAMPLES:
-            batch_examples = min(SHOW_EXAMPLES - len(examples), xb.size(0))
-
-            for j in range(batch_examples):
-                examples.append(
-                    (
-                        decode_tokens(xb[j].tolist()),
-                        decode_tokens(yb[j].tolist()),
-                        decode_tokens(preds[j].tolist()),
-                        per_example_correct[j].item(),
-                    )
-                )
-
-
-# -------------------------------------------------
-# Metrics
-# -------------------------------------------------
-accuracy = threshold_matches / len(X)
-
-token_accuracy = correct / total_tokens
-exact_match_accuracy = exact_matches / len(X)
-
-perplexity = torch.exp(torch.tensor(total_loss / total_tokens))
-
-unit_name = "words" if TOKEN_LEVEL == "word" else "characters"
-threshold = min(MIN_CORRECT_TOKENS, TARGET_LEN)
-
-print(f"\nTokenization Level: {TOKEN_LEVEL}")
-print("Context Length:", CONTEXT_LEN)
+print("\nTokenization Level: word")
+print("Context Length:", f"{MIN_CONTEXT_LEN}-{MAX_CONTEXT_LEN}")
 print("Target Length:", TARGET_LEN)
-print(f"Accuracy (>= {threshold} correct {unit_name}):", accuracy)
-print("Token Accuracy:", token_accuracy)
-print("Exact Match Accuracy:", exact_match_accuracy)
-print("Perplexity:", perplexity.item())
+print("Total Matches:", f"{correct}/{total}")
+print("Order-Independent Accuracy:", accuracy)
 
-if examples:
-    print("\nSample Predictions:\n")
+# -------------------------------------------------
+# Examples
+# -------------------------------------------------
+print("\nSample Predictions:\n")
 
-    for idx, (context, target, prediction, num_correct) in enumerate(examples, start=1):
-        print(f"Example {idx}")
-        print("Context:", context)
-        print(f"Target : {target} ({num_correct}/{TARGET_LEN} correct)")
-        print("Predicted:", prediction)
-        print()
+for i, (ctx, tgt, pred, m, t) in enumerate(examples, 1):
+    print(f"Example {i}")
+    print("Context :", ctx)
+    print(f"Target  : {tgt} ({m}/{t} matched)")
+    print("Predicted:", pred)
+    print()

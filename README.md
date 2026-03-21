@@ -1,26 +1,28 @@
 # Transformer Text Generation
 
-This repository contains a custom PyTorch Transformer language model trained on *The Adventures of Sherlock Holmes*. The current project focus is:
+This repository contains a custom PyTorch Transformer language model trained on *The Adventures of Sherlock Holmes*. The project is now intentionally optimized for one setup only:
 
-- word-level prediction: given a context window, predict the next few words
-- character-level prediction: given a context window, predict the next few characters
-- text generation in the learned Sherlock Holmes style
+- word-level next-word prediction
+- short sentence-like prompts of `5-10` words
+- evaluation on random chunks from the cleaned Sherlock text after full-data training
 
 The implementation uses a causal Transformer encoder in PyTorch rather than a pretrained GPT model.
 
 ## Current Task Setup
 
-The repository no longer trains on a simple full-sequence next-token objective only. The active training setup creates explicit `(X, y)` pairs:
+The training pipeline creates explicit `(X, y)` pairs from sentence-local windows in the Sherlock corpus:
 
-- `X`: the context window
-- `y`: the next few tokens to predict
+- `X`: a left-padded short context window
+- `y`: the next `5` words to predict
 
 Current defaults:
 
-- word model: `60` context tokens -> predict the next `5` words
-- character model: `120` context characters -> predict the next `20` characters
+- minimum context length: `5` words
+- maximum context length: `10` words
+- target length: `5` words
+- stride: `1`
 
-During training, the target chunk is learned with teacher forcing. During generation and evaluation, the model rolls predictions out autoregressively.
+During training, the target chunk is learned with teacher forcing across the full cleaned dataset. During generation and evaluation, the model rolls predictions out autoregressively.
 
 ## Folder Structure
 
@@ -34,7 +36,6 @@ transformer-text-generation-nlp/
 ├── notebooks/
 │   └── text_generation_demo.ipynb
 ├── train_word.py
-├── train_char.py
 ├── evaluate.py
 ├── generate.py
 ├── utils.py
@@ -42,12 +43,8 @@ transformer-text-generation-nlp/
 ├── README.md
 ├── LICENSE
 ├── word_transformer.pt            # generated after training
-├── char_transformer.pt            # generated after training
-├── training_loss_word.png         # generated after training
-└── training_loss_char.png         # generated after training
+└── training_loss_word.png         # generated after training
 ```
-
-The `data/` folder is used locally for the raw and cleaned corpus and is ignored by git.
 
 ## Dataset
 
@@ -55,7 +52,7 @@ Dataset used:
 
 - *The Adventures of Sherlock Holmes*
 - approximately 105,000 words
-- rich literary prose suited to language modeling and style learning
+- literary prose with recurring style and phrase patterns
 
 Expected raw input:
 
@@ -63,13 +60,13 @@ Expected raw input:
 data/sherlock.txt
 ```
 
-The training scripts clean and normalize the text, then write:
+The scripts clean and normalize the text, then write:
 
 ```text
 data/sherlock_cleaned.txt
 ```
 
-The cleaning pipeline in `utils.py` currently:
+The cleaning pipeline in `utils.py`:
 
 - removes Gutenberg header/footer
 - trims front matter
@@ -80,26 +77,18 @@ The cleaning pipeline in `utils.py` currently:
 
 ## Installation
 
-Clone the repository and install dependencies:
-
 ```bash
 git clone https://github.com/imakaash/transformer-text-generation.git
 cd transformer-text-generation
 pip install -r requirements.txt
 ```
 
-Current `requirements.txt` includes:
+Core dependencies used by the custom pipeline:
 
 - `torch`
-- `transformers`
-- `datasets`
-- `accelerate>=1.1.0`
 - `tqdm`
 - `numpy`
-- `sentencepiece`
 - `matplotlib`
-
-The core custom Transformer pipeline only depends on `torch`, `tqdm`, `numpy`, and `matplotlib`. The Hugging Face packages are present for experimental work in this environment.
 
 ## Model
 
@@ -107,24 +96,21 @@ The model is defined in `models/transformer.py`.
 
 Architecture:
 
-- token embedding
+- token embedding with padding support
 - positional embedding
 - stacked `nn.TransformerEncoderLayer` blocks
 - causal attention mask
+- key-padding mask for short left-padded prompts
 - linear output layer with weight tying
 
-Default model hyperparameters:
+Default hyperparameters:
 
-- embedding size: `256`
+- embedding size: `384`
 - attention heads: `8`
-- transformer layers: `4`
-- feedforward size: `512`
-
-Although the implementation uses `TransformerEncoder`, it behaves autoregressively because of the causal mask.
+- transformer layers: `6`
+- feedforward size: `1024`
 
 ## Training
-
-### Word-Level Model
 
 Run:
 
@@ -132,48 +118,25 @@ Run:
 python train_word.py
 ```
 
-Current word-level training behavior:
+Current training behavior:
 
 - reads `data/sherlock.txt`
 - cleans and writes `data/sherlock_cleaned.txt`
-- tokenizes at the word level
-- builds `(context, target)` pairs with:
-  - `CONTEXT_LEN = 60`
-  - `TARGET_LEN = 5`
-  - `STRIDE = 2`
-- trains for `10` epochs with batch size `64`
+- tokenizes at the word level only
+- builds sentence-local `(context, target)` pairs
+- learns from short prompts between `5` and `10` words
+- left-pads shorter contexts to a fixed width of `10`
+- trains on all available pairs from the cleaned Sherlock text
+- trains for `25` epochs with batch size `64`
+- optimizes with `AdamW`, gradient clipping, and cosine learning-rate decay
+- saves the latest checkpoint each epoch
+- records only training loss because there is no validation split
 
 Outputs:
 
 ```text
 word_transformer.pt
 training_loss_word.png
-```
-
-### Character-Level Model
-
-Run:
-
-```bash
-python train_char.py
-```
-
-Current character-level training behavior:
-
-- reads `data/sherlock.txt`
-- cleans and writes `data/sherlock_cleaned.txt`
-- tokenizes at the character level
-- builds `(context, target)` pairs with:
-  - `CONTEXT_LEN = 120`
-  - `TARGET_LEN = 20`
-  - `STRIDE = 3`
-- trains for `10` epochs with batch size `64`
-
-Outputs:
-
-```text
-char_transformer.pt
-training_loss_char.png
 ```
 
 ## Evaluation
@@ -184,49 +147,25 @@ Run:
 python evaluate.py
 ```
 
-Set `TOKEN_LEVEL` inside `evaluate.py` to choose:
-
-- `"word"`
-- `"char"`
-
 Current evaluation behavior:
 
-- rebuilds context-target pairs from `data/sherlock_cleaned.txt`
-- evaluates on the last `10%` of those pairs
-- uses rollout prediction for the target chunk
-- reports perplexity and multiple accuracy views
+- rebuilds the same Sherlock cleaning pipeline from `data/sherlock.txt`
+- samples a random contiguous chunk from the cleaned Sherlock text each run
+- reconstructs sentence-local short-context pairs only from that chunk
+- rolls out predictions for the 5-word target chunk autoregressively
+- uses multinomial sampling during rollout, matching `generate.py`
+- blocks special tokens such as `<pad>`, `<para>`, and `<unk>` during prediction
+- computes order-independent token overlap instead of strict position-by-position accuracy
+- ignores `<para>` and `<pad>` when scoring matches
+- prints `20` sample predictions by default
+- shows raw predicted tokens, matched tokens, wrong predicted tokens, and missing target tokens
+- reports token-level accuracy and perplexity
 
 Reported metrics:
 
-- `Accuracy (>= 3 correct words)` for word-level comparison
-- `Token Accuracy`
-- `Exact Match Accuracy`
+- `Total Correct Tokens (unordered)`
+- `Order-Independent Token Accuracy`
 - `Perplexity`
-
-For the comparison-oriented word-level metric, a prediction is counted as correct if at least `3` out of `5` target words are predicted in the correct positions.
-
-Example:
-
-```text
-Input: "to sherlock holmes she is always the woman . i have"
-Target: "seldom heard him mention her"
-Prediction: "seldom heard him mention her" -> 5/5 correct
-```
-
-Another valid case under the same metric:
-
-```text
-Prediction: "seldom heard him knew her" -> 3/5 correct
-```
-
-This matches the comparison strategy where `3` or more correct predicted words counts as a correct sequence.
-
-Important note:
-
-- `evaluate.py` uses an evaluation slice from the cleaned corpus
-- `train_word.py` and `train_char.py` currently train on all generated pairs
-
-So this evaluation is useful for comparison and monitoring, but it is not yet a strict fully held-out train/test split.
 
 ## Generation
 
@@ -236,98 +175,25 @@ Run:
 python generate.py
 ```
 
-Set `TOKEN_LEVEL` in `generate.py` to choose word-level or character-level generation.
-
 Generation behavior:
 
-- tokenizes the prompt using the same tokenizer as training
-- keeps a sliding context window
-- predicts one token at a time
-- appends each new prediction autoregressively
+- runs multiple built-in prompt examples
+- tokenizes each prompt using the same word tokenizer as training
+- expects each prompt to contain at least `5` words
+- left-pads prompts shorter than the internal max width
+- predicts one word at a time autoregressively
+- uses multinomial sampling from the model distribution
+- prints the exact input passed to the model at every generation step
+- prints the predicted output token at every step
+- prints the final generated continuation for each example
 
-Default example prompt:
+Current example prompts:
 
 ```text
-the drowsiness of the drug
+to sherlock holmes she is always the woman. i
+i had seen little of holmes lately. my
+<para> one night--it was on the twentieth
+i could not help laughing at the ease with which
+indeed, i should have thought a little more.
+they are coiners on a large scale, and
 ```
-
-For word generation, `<para>` tokens are converted back into paragraph breaks in the final output.
-
-## Utility Functions
-
-`utils.py` currently provides:
-
-- text cleaning helpers
-- word tokenizer
-- character tokenizer
-- word token splitting for prompt handling
-- `create_future_prediction_sequences(...)` for building `(X, y)` pairs
-
-This function is the core of the current training task:
-
-```python
-X = context window
-y = next few tokens to predict
-```
-
-## Current Status
-
-The repository is currently aligned around the custom Transformer pipeline:
-
-- training scripts for word and character prediction are active
-- evaluation matches the current multi-token prediction task
-- generation matches the same context-window setup
-- README now reflects the new workflow
-
-Artifacts such as model weights, plots, and local data are generated during runs and may not all be tracked in git.
-
-## Suggested Workflow
-
-1. Place the raw corpus in `data/sherlock.txt`
-2. Train a model:
-
-```bash
-python train_word.py
-```
-
-or
-
-```bash
-python train_char.py
-```
-
-3. Evaluate:
-
-```bash
-python evaluate.py
-```
-
-4. Generate text:
-
-```bash
-python generate.py
-```
-
-## Future Improvements
-
-Possible next steps:
-
-- add a true train/validation/test split
-- save token vocab metadata explicitly with checkpoints
-- compare word and character models on the same held-out examples
-- add top-k or top-p sampling for generation
-- log evaluation metrics after each epoch during training
-
-## Author
-
-Akash Kumar Yadav
-MSc Data Science and Natural Language Processing
-Universitat Trier
-
-Rehman Rasheed
-MSc Natural Language Processing
-Universitat Trier
-
-## License
-
-This project includes the `LICENSE` file in the repository root.
