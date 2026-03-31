@@ -7,13 +7,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 TEXT_PATH = "data/sherlock.txt"
 PROMPTS = [
-    "i say, watson,",
-    "i had seen little of holmes lately. my",
-    "<para> one night--it was on the twentieth",
-    "i could not help laughing at the ease with which",
-    "indeed, i should have thought a little more.",
-    "i could not help laughing at the ease with which",
-    "they are coiners on a large scale, and"
+    "putty , and he glared at the envelope which he",
+    "' you may imagine , mr . holmes ,",
+    "which will always secure me from any steps which he",
+    "no difficulty in engaging a bedroom and sitting-room at the",
+    "upon four before the door opened , and a drunken-looking",
+    "basket-chair . this is my friend and colleague , dr",
+    ", so it was a close thing , but we",
+    "frock-coat , unbuttoned in the front , and a drab",
+    "come , and the billet was such a good one",
+    ". it must be done at once . you must"
 ]
 GENERATE_LENGTH = 5
 MIN_CONTEXT_LEN = 5

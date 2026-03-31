@@ -48,11 +48,10 @@ class TransformerLanguageModel(nn.Module):
 
     def generate_causal_mask(self, size):
 
-        mask = torch.triu(torch.ones(size, size), diagonal=1)
-
-        mask = mask.masked_fill(mask == 1, float('-inf'))
-
-        return mask
+        return torch.triu(
+            torch.ones(size, size, dtype=torch.bool),
+            diagonal=1
+        )
 
 
     def forward(self, x):

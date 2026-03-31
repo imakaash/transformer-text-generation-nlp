@@ -4,7 +4,7 @@ This repository contains a custom PyTorch Transformer language model trained on 
 
 - word-level next-word prediction
 - short sentence-like prompts of `5-10` words
-- evaluation on random chunks from the cleaned Sherlock text after full-data training
+- training with explicit train/validation/test splits from the cleaned Sherlock text
 
 The implementation uses a causal Transformer encoder in PyTorch rather than a pretrained GPT model.
 
@@ -24,6 +24,12 @@ Current defaults:
 
 During training, the target chunk is learned with teacher forcing across the full cleaned dataset. During generation and evaluation, the model rolls predictions out autoregressively.
 
+Dataset split defaults:
+
+- train: `80%`
+- validation: `10%`
+- test: `10%`
+
 ## Folder Structure
 
 ```text
@@ -33,8 +39,6 @@ transformer-text-generation-nlp/
 │   └── sherlock_cleaned.txt
 ├── models/
 │   └── transformer.py
-├── notebooks/
-│   └── text_generation_demo.ipynb
 ├── train_word.py
 ├── evaluate.py
 ├── generate.py
@@ -124,13 +128,15 @@ Current training behavior:
 - cleans and writes `data/sherlock_cleaned.txt`
 - tokenizes at the word level only
 - builds sentence-local `(context, target)` pairs
+- shuffles and splits the pairs into train, validation, and test sets
 - learns from short prompts between `5` and `10` words
 - left-pads shorter contexts to a fixed width of `10`
-- trains on all available pairs from the cleaned Sherlock text
+- trains only on the training split
 - trains for `25` epochs with batch size `64`
 - optimizes with `AdamW`, gradient clipping, and cosine learning-rate decay
-- saves the latest checkpoint each epoch
-- records only training loss because there is no validation split
+- computes validation loss after every epoch
+- saves the best checkpoint based on validation loss
+- keeps the training-loss plot output in `training_loss_word.png`
 
 Outputs:
 
@@ -150,22 +156,20 @@ python evaluate.py
 Current evaluation behavior:
 
 - rebuilds the same Sherlock cleaning pipeline from `data/sherlock.txt`
-- samples a random contiguous chunk from the cleaned Sherlock text each run
-- reconstructs sentence-local short-context pairs only from that chunk
-- rolls out predictions for the 5-word target chunk autoregressively
-- uses multinomial sampling during rollout, matching `generate.py`
-- blocks special tokens such as `<pad>`, `<para>`, and `<unk>` during prediction
+- reconstructs the same sentence-local prediction pairs used in training
+- rebuilds the same deterministic `80/10/10` split and evaluates only on the held-out test set
+- rolls out predictions for the 5-word target chunk autoregressively from test contexts
+- uses deterministic next-token selection during evaluation
 - computes order-independent token overlap instead of strict position-by-position accuracy
 - ignores `<para>` and `<pad>` when scoring matches
-- prints `20` sample predictions by default
-- shows raw predicted tokens, matched tokens, wrong predicted tokens, and missing target tokens
-- reports token-level accuracy and perplexity
+- prints sample predictions from the test set
+- reports test loss, test perplexity, and order-independent test accuracy
 
 Reported metrics:
 
-- `Total Correct Tokens (unordered)`
-- `Order-Independent Token Accuracy`
-- `Perplexity`
+- `Training Loss`
+- `Total Matches`
+- `Test Accuracy`
 
 ## Generation
 
@@ -190,10 +194,14 @@ Generation behavior:
 Current example prompts:
 
 ```text
-to sherlock holmes she is always the woman. i
-i had seen little of holmes lately. my
-<para> one night--it was on the twentieth
-i could not help laughing at the ease with which
-indeed, i should have thought a little more.
-they are coiners on a large scale, and
+    "putty , and he glared at the envelope which he",
+    "' you may imagine , mr . holmes ,",
+    "which will always secure me from any steps which he",
+    "no difficulty in engaging a bedroom and sitting-room at the",
+    "upon four before the door opened , and a drunken-looking",
+    "basket-chair . this is my friend and colleague , dr",
+    ", so it was a close thing , but we",
+    "frock-coat , unbuttoned in the front , and a drab",
+    "come , and the billet was such a good one",
+    ". it must be done at once . you must"
 ```
